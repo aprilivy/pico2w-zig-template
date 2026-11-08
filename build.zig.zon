@@ -1,0 +1,17 @@
+.{
+    .name = .pico2w_template,
+    .version = "0.0.0",
+    .fingerprint = 0x21c1ceba6716b484,
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        .microzig = .{
+            .url = "https://github.com/ZigEmbeddedGroup/microzig/releases/download/0.17.35/microzig.tar.gz",
+            .hash = "microzig-0.17.35-D20YSQXLAACIg6d65dAPPvrdHQq9p9R4doGobo43kisV",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
