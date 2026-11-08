@@ -5,6 +5,7 @@ const microzig = @import("microzig");
 const config = @import("config");
 
 const hal = microzig.hal;
+const time = microzig.drivers.time;
 const Chip = hal.drivers.WiFi.Chip;
 // microzig doesn't export this type by name
 const JoinPoller = @typeInfo(@typeInfo(@TypeOf(Chip.join)).@"fn".return_type.?).error_union.payload;
@@ -12,6 +13,7 @@ const log = std.log.scoped(.wifi);
 
 // regulatory domain, decides which channels the radio may use
 const country = "GB";
+const retry_delay: time.Duration = .from_ms(10_000);
 
 pub const Radio = struct {
     driver: hal.drivers.WiFi,
@@ -21,12 +23,41 @@ pub const Radio = struct {
 
     const Network = struct {
         ssid: []const u8,
-        joining: ?JoinPoller,
-        joined: bool,
+        state: union(enum) {
+            joining: JoinPoller,
+            joined,
+            /// join again at this time, unless the chip rejoins by itself first
+            down: time.Absolute,
+        },
         frame: [1540]u8 align(4),
+
+        fn step(network: *Network, chip: *Chip, now: time.Absolute) !void {
+            switch (network.state) {
+                .joining => |*joiner| {
+                    if (try joiner.poll()) return;
+                    log.info("joined {s}", .{network.ssid});
+                    network.state = .joined;
+                },
+                .joined => if (!chip.is_joined()) {
+                    log.warn("lost {s}", .{network.ssid});
+                    network.state = .{ .down = now.add_duration(retry_delay) };
+                },
+                .down => |retry_at| if (chip.is_joined()) {
+                    log.info("joined {s}", .{network.ssid});
+                    network.state = .joined;
+                } else if (retry_at.is_reached_by(now)) {
+                    log.info("joining {s}", .{network.ssid});
+                    // the driver keeps the last attempt's events, which would fail this one straight away
+                    chip.wifi.event_log = .{};
+                    network.state = .{ .joining = try chip.join(network.ssid, config.wifi_password orelse "", .{
+                        .security = if (config.wifi_password == null) .open else .wpa2_psk,
+                    }) };
+                },
+            }
+        }
     };
 
-    /// brings the chip up and starts joining the network given at build time.
+    /// brings the chip up, joining starts on the first poll.
     /// fills `self` in place because the driver keeps pointers into it
     pub fn init(self: *Radio) !void {
         self.driver = .{};
@@ -39,46 +70,30 @@ pub const Radio = struct {
             self.network = null;
             return;
         };
-        log.info("joining {s}", .{ssid});
-        self.network = .{
-            .ssid = ssid,
-            .joining = try chip.join(ssid, config.wifi_password orelse "", .{
-                .security = if (config.wifi_password == null) .open else .wpa2_psk,
-            }),
-            .joined = false,
-            .frame = undefined,
-        };
+        self.network = .{ .ssid = ssid, .state = .{ .down = hal.time.get_time_since_boot() }, .frame = undefined };
     }
 
     pub fn poll(self: *Radio) void {
         const network = if (self.network) |*n| n else return;
         const chip = &self.driver.chip;
+        const now = hal.time.get_time_since_boot();
 
-        if (network.joining) |*joiner| {
-            const still_joining = joiner.poll() catch |err| blk: {
-                log.err("couldn't join {s}: {t}", .{ network.ssid, err });
-                break :blk false;
-            };
-            if (!still_joining) network.joining = null;
-        } else {
-            // nothing runs above the link layer yet, so frames are only read
-            // to keep link events coming, then dropped
-            _ = Chip.recv_zc(chip, &network.frame) catch |err| log.warn("receive failed: {t}", .{err});
-        }
+        network.step(chip, now) catch |err| {
+            log.err("couldn't join {s}: {t}", .{ network.ssid, err });
+            // the driver would return it from every receive until the next join
+            chip.wifi.err = null;
+            network.state = .{ .down = now.add_duration(retry_delay) };
+        };
 
-        const joined = chip.is_joined();
-        if (joined == network.joined) return;
-        network.joined = joined;
-        if (joined) {
-            log.info("joined {s}", .{network.ssid});
-        } else {
-            log.warn("lost {s}", .{network.ssid});
-        }
+        if (network.state == .joining) return;
+        // nothing runs above the link layer yet, so frames are only read
+        // to keep link events coming, then dropped
+        _ = Chip.recv_zc(chip, &network.frame) catch |err| log.warn("receive failed: {t}", .{err});
     }
 
     /// true while a network is configured but not joined
     pub fn connecting(self: *const Radio) bool {
         const network = self.network orelse return false;
-        return !network.joined;
+        return network.state != .joined;
     }
 };

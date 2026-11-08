@@ -21,6 +21,7 @@ zig build -Dwifi-ssid=MyNetwork -Dwifi-password=secret
 ```
 
 without `-Dwifi-password` it joins as an open network, otherwise as wpa2-psk.
+if a join fails, or the network drops and the chip doesn't rejoin by itself, it tries again every 10 seconds.
 wpa3-only networks need `.wpa3_sae` in `src/wifi.zig`.
 the regulatory country is set there too (`GB`).
 
