@@ -19,6 +19,15 @@ pub fn build(b: *std.Build) void {
     // swap for pico2_riscv to run on the hazard3 cores instead
     const target = mb.ports.rp2xxx.boards.raspberrypi.pico2_arm;
 
+    const net_dep = b.dependency("net", .{
+        .target = b.resolveTargetQuery(target.zig_target),
+        .optimize = optimize,
+        // the cyw43 wants 22 bytes in front of each ethernet frame and 4 after: 22 + 14 + 1500 + 4
+        .mtu = 1500,
+        .pbuf_header_length = 22,
+        .pbuf_length = 1540,
+    });
+
     const config = b.addOptions();
     config.addOption([]const u8, "name", @tagName(manifest.name));
     config.addOption(?[]const u8, "wifi_ssid", wifi_ssid);
@@ -30,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .root_source_file = b.path("src/main.zig"),
         .imports = &.{
+            .{ .name = "net", .module = net_dep.module("net") },
             .{ .name = "config", .module = config.createModule() },
         },
     });

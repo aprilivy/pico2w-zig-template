@@ -1,0 +1,27 @@
+.{
+    .name = .net,
+    .version = "0.0.0",
+    
+    .minimum_zig_version = "0.17.1",.fingerprint = 0xf2ea15ff2558583e,
+    .dependencies = .{
+        .foundationlibc = .{
+            .url = "https://github.com/ZigEmbeddedGroup/microzig/releases/download/0.17.35/foundationlibc.tar.gz",
+            .hash = "foundationlibc-0.0.0-LAEuPAqkAADorz5k9CsZbKu9o7iY-ibgCZoqEpplmj4q",
+            .lazy = false,
+        },
+        .lwip = .{
+            .path = "../lwip",
+        },
+        .link = .{
+            .url = "https://github.com/ZigEmbeddedGroup/microzig/releases/download/0.17.35/link.tar.gz",
+            .hash = "link-0.0.0-YMdWGXMKAAA1AtGmeXcYL7F6smGZLI-vJRUAUUq9VFuh",
+            .lazy = false,
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+    },
+}

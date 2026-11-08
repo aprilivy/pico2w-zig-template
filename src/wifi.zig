@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const microzig = @import("microzig");
+const net = @import("net");
 const config = @import("config");
 
 const hal = microzig.hal;
@@ -23,13 +24,15 @@ pub const Radio = struct {
 
     const Network = struct {
         ssid: []const u8,
+        /// lwip interface, gets its address over dhcp
+        nic: net.Interface,
         state: union(enum) {
             joining: JoinPoller,
             joined,
             /// join again at this time, unless the chip rejoins by itself first
             down: time.Absolute,
         },
-        frame: [1540]u8 align(4),
+        online: bool,
 
         fn step(network: *Network, chip: *Chip, now: time.Absolute) !void {
             switch (network.state) {
@@ -58,7 +61,7 @@ pub const Radio = struct {
     };
 
     /// brings the chip up, joining starts on the first poll.
-    /// fills `self` in place because the driver keeps pointers into it
+    /// fills `self` in place because the driver and lwip keep pointers into it
     pub fn init(self: *Radio) !void {
         self.driver = .{};
         const chip = try self.driver.init(.{ .country = .{ .code = country.* } });
@@ -70,7 +73,13 @@ pub const Radio = struct {
             self.network = null;
             return;
         };
-        self.network = .{ .ssid = ssid, .state = .{ .down = hal.time.get_time_since_boot() }, .frame = undefined };
+        self.network = .{
+            .ssid = ssid,
+            .nic = .{ .link = chip.link() },
+            .state = .{ .down = hal.time.get_time_since_boot() },
+            .online = false,
+        };
+        try self.network.?.nic.init(chip.mac, .{});
     }
 
     pub fn poll(self: *Radio) void {
@@ -85,15 +94,33 @@ pub const Radio = struct {
             network.state = .{ .down = now.add_duration(retry_delay) };
         };
 
+        // a join that fails makes the next receive return its error, and
+        // net's poll leaks a packet buffer whenever a receive errors
         if (network.state == .joining) return;
-        // nothing runs above the link layer yet, so frames are only read
-        // to keep link events coming, then dropped
-        _ = Chip.recv_zc(chip, &network.frame) catch |err| log.warn("receive failed: {t}", .{err});
+        network.nic.poll() catch |err| log.warn("network poll failed: {t}", .{err});
+
+        const online = network.nic.ready();
+        if (online == network.online) return;
+        network.online = online;
+        if (online) {
+            log.info("online at {s}", .{std.mem.span(net.lwip.ipaddr_ntoa(&network.nic.netif.ip_addr))});
+        } else {
+            log.warn("offline", .{});
+        }
     }
 
-    /// true while a network is configured but not joined
+    /// true while a network is configured but there's no address on it
     pub fn connecting(self: *const Radio) bool {
         const network = self.network orelse return false;
-        return network.state != .joined;
+        return !network.online;
     }
 };
+
+// lwip calls these, see vendor/net/src/include/arch/cc.h
+export fn lwip_sys_now() u32 {
+    return @truncate(hal.time.get_time_since_boot().to_us() / std.time.us_per_ms);
+}
+
+export fn lwip_rand() u32 {
+    return hal.rand.trng.random_blocking();
+}

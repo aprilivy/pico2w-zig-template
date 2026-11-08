@@ -1,7 +1,7 @@
 # pico2w-zig-template
 
 starting point for raspberry pi pico 2 w firmware in zig, on [microzig](https://github.com/ZigEmbeddedGroup/microzig).
-blinks the onboard led, logs over usb serial, and joins a wi-fi network if you give it one.
+blinks the onboard led, logs over usb serial, and joins a wi-fi network and gets an address over dhcp if you give it one.
 
 needs zig 0.17.1, which is what microzig 0.17.35 asks for.
 
@@ -22,6 +22,7 @@ zig build -Dwifi-ssid=MyNetwork -Dwifi-password=secret
 
 without `-Dwifi-password` it joins as an open network, otherwise as wpa2-psk.
 if a join fails, or the network drops and the chip doesn't rejoin by itself, it tries again every 10 seconds.
+once dhcp hands out an address the log shows `online at <address>`.
 wpa3-only networks need `.wpa3_sae` in `src/wifi.zig`.
 the regulatory country is set there too (`GB`).
 
@@ -50,21 +51,21 @@ arm-none-eabi-addr2line -e zig-out/firmware/pico2w_template.elf 0x1000abcd
 
 the led is wired to the wi-fi chip, not the rp2350, so it only works once the chip is up.
 
-- fast blink: joining, or the network was lost
-- slow blink: joined, or built without wi-fi
+- fast blink: no address yet. joining, waiting on dhcp, or the network was lost
+- slow blink: online, or built without wi-fi
 - not blinking: the firmware stopped. check the serial log
 
 ## layout
 
 - `src/main.zig`: startup, the main loop, and the panic handler
 - `src/usb_serial.zig`: the usb serial port and the `std.log` backend
-- `src/wifi.zig`: the cyw43 chip, which owns the led and the wi-fi join
+- `src/wifi.zig`: the cyw43 chip, which owns the led, the wi-fi join and the lwip interface
+- `vendor/`: microzig's `net` and `lwip` packages with a packaging fix, see `vendor/README.md`
 
 usb and the radio are both polled from the main loop, so add your code there and keep each pass short.
 anything that blocks stalls both.
 
-there's no ip stack yet: frames the radio receives are dropped.
-microzig's lwip-based `net` package can't build from the 0.17.35 release, because its `lwip.tar.gz` is missing `include/` and `src/`.
+the lwip interface is `nic` in `src/wifi.zig`. microzig's `net` package has `Udp` and `tcp` on top of it.
 
 to build for the risc-v cores instead, change `pico2_arm` to `pico2_riscv` in `build.zig`.
 
