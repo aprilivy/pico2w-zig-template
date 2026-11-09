@@ -1,8 +1,9 @@
 .{
     .name = .net,
     .version = "0.0.0",
-    
-    .minimum_zig_version = "0.17.1",.fingerprint = 0xf2ea15ff2558583e,
+
+    .minimum_zig_version = "0.17.1",
+    .fingerprint = 0xf2ea15ff2558583e,
     .dependencies = .{
         .foundationlibc = .{
             .url = "https://github.com/ZigEmbeddedGroup/microzig/releases/download/0.17.35/foundationlibc.tar.gz",
