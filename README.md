@@ -20,11 +20,11 @@ to join a network on boot:
 zig build -Dwifi-ssid=MyNetwork -Dwifi-password=secret
 ```
 
-without `-Dwifi-password` it joins as an open network, otherwise as wpa2-psk.
+the ssid is case-sensitive.
+without `-Dwifi-password` it joins as an open network. with one it tries wpa3 first and falls back to wpa2 if that fails.
 if a join fails, or the network drops and the chip doesn't rejoin by itself, it tries again every 10 seconds.
 once dhcp hands out an address the log shows `online at <address>`.
-wpa3-only networks need `.wpa3_sae` in `src/wifi.zig`.
-the regulatory country is set there too (`GB`).
+the regulatory country is set in `src/wifi.zig` (`GB`).
 
 the credentials are compiled into the firmware, so they're in `zig-out/` and `.zig-cache/`.
 both are gitignored.

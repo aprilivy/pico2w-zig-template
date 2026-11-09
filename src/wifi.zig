@@ -15,6 +15,8 @@ const log = std.log.scoped(.wifi);
 // regulatory domain, decides which channels the radio may use
 const country = "GB";
 const retry_delay: time.Duration = .from_ms(10_000);
+// wpa3 first so networks that take both use it, wpa2 for the ones without it
+const securities: []const Chip.JoinOptions.Security = if (config.wifi_password == null) &.{.open} else &.{ .wpa3_sae, .wpa2_psk };
 
 pub const Radio = struct {
     driver: hal.drivers.WiFi,
@@ -26,37 +28,52 @@ pub const Radio = struct {
         ssid: []const u8,
         /// lwip interface, gets its address over dhcp
         nic: net.Interface,
+        /// `attempt` is an index into `securities`
         state: union(enum) {
-            joining: JoinPoller,
+            joining: struct { poller: JoinPoller, attempt: usize },
             joined,
-            /// join again at this time, unless the chip rejoins by itself first
-            down: time.Absolute,
+            /// join at `at`, unless the chip rejoins by itself first
+            down: struct { at: time.Absolute, attempt: usize },
         },
         online: bool,
 
-        fn step(network: *Network, chip: *Chip, now: time.Absolute) !void {
+        fn step(network: *Network, chip: *Chip, now: time.Absolute) void {
             switch (network.state) {
-                .joining => |*joiner| {
-                    if (try joiner.poll()) return;
-                    log.info("joined {s}", .{network.ssid});
+                .joining => |*joining| {
+                    const still_joining = joining.poller.poll() catch |err|
+                        return network.fail(chip, now, joining.attempt, err);
+                    if (still_joining) return;
+                    log.info("joined {s} with {t}", .{ network.ssid, securities[joining.attempt] });
                     network.state = .joined;
                 },
                 .joined => if (!chip.is_joined()) {
                     log.warn("lost {s}", .{network.ssid});
-                    network.state = .{ .down = now.add_duration(retry_delay) };
+                    network.state = .{ .down = .{ .at = now.add_duration(retry_delay), .attempt = 0 } };
                 },
-                .down => |retry_at| if (chip.is_joined()) {
+                .down => |down| if (chip.is_joined()) {
                     log.info("joined {s}", .{network.ssid});
                     network.state = .joined;
-                } else if (retry_at.is_reached_by(now)) {
-                    log.info("joining {s}", .{network.ssid});
+                } else if (down.at.is_reached_by(now)) {
+                    log.info("joining {s} with {t}", .{ network.ssid, securities[down.attempt] });
                     // the driver keeps the last attempt's events, which would fail this one straight away
                     chip.wifi.event_log = .{};
-                    network.state = .{ .joining = try chip.join(network.ssid, config.wifi_password orelse "", .{
-                        .security = if (config.wifi_password == null) .open else .wpa2_psk,
-                    }) };
+                    const poller = chip.join(network.ssid, config.wifi_password orelse "", .{
+                        .security = securities[down.attempt],
+                    }) catch |err| return network.fail(chip, now, down.attempt, err);
+                    network.state = .{ .joining = .{ .poller = poller, .attempt = down.attempt } };
                 },
             }
+        }
+
+        /// moves straight on to the next security, or waits once they've all failed
+        fn fail(network: *Network, chip: *Chip, now: time.Absolute, attempt: usize, err: anyerror) void {
+            log.warn("couldn't join {s} with {t}: {t}", .{ network.ssid, securities[attempt], err });
+            // the driver would return it from every receive until the next join
+            chip.wifi.err = null;
+            network.state = .{ .down = if (attempt + 1 < securities.len)
+                .{ .at = now, .attempt = attempt + 1 }
+            else
+                .{ .at = now.add_duration(retry_delay), .attempt = 0 } };
         }
     };
 
@@ -76,7 +93,7 @@ pub const Radio = struct {
         self.network = .{
             .ssid = ssid,
             .nic = .{ .link = chip.link() },
-            .state = .{ .down = hal.time.get_time_since_boot() },
+            .state = .{ .down = .{ .at = hal.time.get_time_since_boot(), .attempt = 0 } },
             .online = false,
         };
         try self.network.?.nic.init(chip.mac, .{});
@@ -87,12 +104,7 @@ pub const Radio = struct {
         const chip = &self.driver.chip;
         const now = hal.time.get_time_since_boot();
 
-        network.step(chip, now) catch |err| {
-            log.err("couldn't join {s}: {t}", .{ network.ssid, err });
-            // the driver would return it from every receive until the next join
-            chip.wifi.err = null;
-            network.state = .{ .down = now.add_duration(retry_delay) };
-        };
+        network.step(chip, now);
 
         // a join that fails makes the next receive return its error, and
         // net's poll leaks a packet buffer whenever a receive errors
